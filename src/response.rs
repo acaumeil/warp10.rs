@@ -1,4 +1,4 @@
-use isahc::http::status::StatusCode;
+use reqwest::StatusCode;
 
 #[derive(Debug)]
 pub struct Warp10Response {

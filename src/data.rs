@@ -106,9 +106,7 @@ impl Warp10Serializable for GeoValue {
             "{}:{}/{}",
             self.lat,
             self.lon,
-            self.elev
-                .map(|e| e.to_string())
-                .unwrap_or_else(|| "".to_string())
+            self.elev.map(|e| e.to_string()).unwrap_or_default()
         )
     }
 }

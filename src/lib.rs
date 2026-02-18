@@ -1,6 +1,7 @@
 mod client;
 mod data;
 mod error;
+mod http_handler;
 mod response;
 mod token;
 mod writer;

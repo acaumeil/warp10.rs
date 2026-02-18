@@ -1,4 +1,4 @@
-use isahc::http::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_TYPE, HOST};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_TYPE, HOST};
 
 use crate::client::*;
 
