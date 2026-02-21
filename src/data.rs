@@ -24,12 +24,162 @@ pub type Double = f64;
 pub type Boolean = bool;
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct HHCode {
+    pub lat: Double,
+    pub lon: Double,
+}
+
+impl HHCode {
+    pub fn new(lat: Double, lon: Double) -> HHCode {
+        HHCode { lat, lon }
+    }
+}
+
+#[cfg(feature = "warp10_version_2_1")]
+#[derive(Debug, Clone, PartialEq)]
+pub struct Quaternions {
+    pub w: Double,
+    pub x: Double,
+    pub y: Double,
+    pub z: Double,
+}
+
+#[cfg(feature = "warp10_version_2_1")]
+impl Quaternions {
+    pub fn new(w: Double, x: Double, y: Double, z: Double) -> Quaternions {
+        Quaternions { w, x, y, z }
+    }
+}
+
+#[cfg(feature = "warp10_version_2_1")]
+#[derive(Debug, Clone, PartialEq)]
+pub enum MultiValueKind {
+    Value(Value),
+    UnamedGTS(UnamedGeoTimeSeries),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnamedGeoTimeSeries {
+    pub timestamp: DateTime<FixedOffset>,
+    pub lat: Option<Double>,
+    pub lon: Option<Double>,
+    pub elev: Option<Long>,
+    pub value: Value,
+}
+
+impl UnamedGeoTimeSeries {
+    pub fn new(timestamp: DateTime<FixedOffset>, value: Value) -> UnamedGeoTimeSeries {
+        UnamedGeoTimeSeries::for_ts(timestamp, value)
+    }
+
+    pub fn for_ts(timestamp: DateTime<FixedOffset>, value: Value) -> UnamedGeoTimeSeries {
+        UnamedGeoTimeSeries {
+            timestamp,
+            lat: None,
+            lon: None,
+            elev: None,
+            value,
+        }
+    }
+
+    pub fn with_geo(mut self, lat: Double, lon: Double, elev: Option<Long>) -> Self {
+        self.lat = Some(lat);
+        self.lon = Some(lon);
+        self.elev = elev;
+        self
+    }
+
+    pub fn with_elev(mut self, elev: Long) -> Self {
+        self.elev = Some(elev);
+        self
+    }
+
+    pub fn validate(self) -> bool {
+        self.lat.is_some() == self.lon.is_some()
+    }
+}
+
+impl Warp10Serializable for UnamedGeoTimeSeries {
+    fn warp10_serialize(&self) -> String {
+        let mut coord = String::new();
+        if let (Some(lat), Some(lon)) = (self.lat, self.lon) {
+            coord.push_str(&format!("{}:{}", lat, lon));
+        }
+        if let Some(elev) = self.elev {
+            coord.push('/');
+            coord.push_str(&elev.to_string());
+        }
+        if coord.is_empty() {
+            format!(
+                "{}/{}",
+                self.timestamp.timestamp_micros(),
+                self.value.warp10_serialize()
+            )
+        } else {
+            format!(
+                "{}/{}/{}",
+                self.timestamp.timestamp_micros(),
+                coord,
+                self.value.warp10_serialize()
+            )
+        }
+    }
+}
+
+#[cfg(feature = "warp10_version_2_1")]
+#[derive(Debug, Clone, PartialEq)]
+pub struct MultiValue {
+    pub data: Vec<MultiValueKind>,
+    pub compressed: bool,
+}
+
+#[cfg(feature = "warp10_version_2_1")]
+impl MultiValue {
+    pub fn new(data: Vec<MultiValueKind>) -> MultiValue {
+        MultiValue {
+            data,
+            compressed: true,
+        }
+    }
+
+    pub fn no_compression(mut self) -> Self {
+        self.compressed = false;
+        self
+    }
+}
+
+#[cfg(feature = "warp10_version_2_1")]
+impl Warp10Serializable for MultiValue {
+    fn warp10_serialize(&self) -> String {
+        let values = self
+            .data
+            .iter()
+            .map(|v| match v {
+                MultiValueKind::Value(v) => v.warp10_serialize(),
+                MultiValueKind::UnamedGTS(gts) => gts.warp10_serialize(),
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!("[{}{}]", if self.compressed { "!" } else { "" }, values)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Int(Int),
     Long(Long),
     Double(Double),
     Boolean(Boolean),
     String(String),
+    HHCode(HHCode),
+    #[cfg(feature = "warp10_version_2_1")]
+    Quaternions(Quaternions),
+    #[cfg(feature = "warp10_version_2_1")]
+    BinaryB64(String),
+    #[cfg(feature = "warp10_version_2_1")]
+    BinaryHex(String),
+    #[cfg(feature = "warp10_version_2_1")]
+    MultiValue(MultiValue),
 }
 
 impl Warp10Serializable for Value {
@@ -39,7 +189,16 @@ impl Warp10Serializable for Value {
             Value::Long(l) => l.to_string(),
             Value::Double(d) => d.to_string(),
             Value::Boolean(b) => b.to_string(),
-            Value::String(ref s) => format!("'{}'", s),
+            Value::String(ref s) => format!("'{}'", url_encode(s)),
+            Value::HHCode(ref hhc) => format!("HH:{}:{}", hhc.lat, hhc.lon),
+            #[cfg(feature = "warp10_version_2_1")]
+            Value::Quaternions(ref q) => format!("Q:{}:{}:{}:{}", q.w, q.x, q.y, q.z),
+            #[cfg(feature = "warp10_version_2_1")]
+            Value::BinaryB64(ref b64) => format!("b64:{}", b64),
+            #[cfg(feature = "warp10_version_2_1")]
+            Value::BinaryHex(ref hex) => format!("hex:{}", hex),
+            #[cfg(feature = "warp10_version_2_1")]
+            Value::MultiValue(ref mv) => mv.warp10_serialize(),
         }
     }
 }
@@ -80,6 +239,26 @@ impl From<String> for Value {
     }
 }
 
+impl From<HHCode> for Value {
+    fn from(hhc: HHCode) -> Self {
+        Self::HHCode(hhc)
+    }
+}
+
+#[cfg(feature = "warp10_version_2_1")]
+impl From<Quaternions> for Value {
+    fn from(q: Quaternions) -> Self {
+        Self::Quaternions(q)
+    }
+}
+
+#[cfg(feature = "warp10_version_2_1")]
+impl From<MultiValue> for Value {
+    fn from(mv: MultiValue) -> Self {
+        Self::MultiValue(mv)
+    }
+}
+
 impl Value {
     #[cfg(feature = "json")]
     pub fn try_from<T: Serialize>(obj: &T) -> error::Result<Self> {
@@ -89,9 +268,9 @@ impl Value {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct GeoValue {
-    lat: Double,
-    lon: Double,
-    elev: Option<Long>,
+    pub lat: Double,
+    pub lon: Double,
+    pub elev: Option<Long>,
 }
 
 impl GeoValue {
@@ -113,8 +292,8 @@ impl Warp10Serializable for GeoValue {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Label {
-    name: String,
-    value: String,
+    pub name: String,
+    pub value: String,
 }
 
 impl Label {
@@ -134,11 +313,11 @@ impl Warp10Serializable for Label {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Data {
-    date: Option<DateTime<FixedOffset>>,
-    geo: Option<GeoValue>,
-    name: String,
-    labels: Vec<Label>,
-    value: Value,
+    pub date: Option<DateTime<FixedOffset>>,
+    pub geo: Option<GeoValue>,
+    pub name: String,
+    pub labels: Vec<Label>,
+    pub value: Value,
 }
 
 impl Data {
@@ -252,6 +431,130 @@ mod tests {
         assert_eq!(
             Value::String("foobar".to_string()).warp10_serialize(),
             "'foobar'"
+        );
+
+        assert_eq!(
+            Value::String("hello warp10".to_string()).warp10_serialize(),
+            "'hello%20warp10'"
+        );
+    }
+
+    #[test]
+    fn serialize_hh_code() {
+        assert_eq!(
+            Value::HHCode(HHCode::new(42.66, 32.85)).warp10_serialize(),
+            "HH:42.66:32.85"
+        );
+    }
+
+    #[cfg(feature = "warp10_version_2_1")]
+    #[test]
+    fn serialize_quaternions() {
+        assert_eq!(
+            Value::Quaternions(Quaternions::new(
+                0.7071067811865475,
+                0.408248290463863,
+                0.408248290463863,
+                0.408248290463863
+            ))
+            .warp10_serialize(),
+            "Q:0.7071067811865475:0.408248290463863:0.408248290463863:0.408248290463863"
+        );
+    }
+
+    #[cfg(feature = "warp10_version_2_1")]
+    #[test]
+    fn serialize_binary_b64() {
+        assert_eq!(
+            Value::BinaryB64("aGVsbG8gV2FycCAxMAo=".to_string()).warp10_serialize(),
+            "b64:aGVsbG8gV2FycCAxMAo="
+        );
+    }
+
+    #[cfg(feature = "warp10_version_2_1")]
+    #[test]
+    fn serialize_binary_hex() {
+        assert_eq!(
+            Value::BinaryHex("68656c6c6f2057617270203130".to_string()).warp10_serialize(),
+            "hex:68656c6c6f2057617270203130"
+        );
+    }
+
+    #[test]
+    fn serialize_unamed_geo_time_series() {
+        assert_eq!(
+            UnamedGeoTimeSeries::new(
+                (chrono::DateTime::UNIX_EPOCH + TimeDelta::new(25, 123456789).unwrap())
+                    .fixed_offset(),
+                Value::Int(42)
+            )
+            .warp10_serialize(),
+            "25123456/42"
+        );
+
+        assert_eq!(
+            UnamedGeoTimeSeries::new(
+                (chrono::DateTime::UNIX_EPOCH + TimeDelta::new(25, 123456789).unwrap())
+                    .fixed_offset(),
+                Value::Int(42)
+            )
+            .with_geo(42.66, 32.85, None)
+            .warp10_serialize(),
+            "25123456/42.66:32.85/42"
+        );
+
+        assert_eq!(
+            UnamedGeoTimeSeries::new(
+                (chrono::DateTime::UNIX_EPOCH + TimeDelta::new(25, 123456789).unwrap())
+                    .fixed_offset(),
+                Value::Int(42)
+            )
+            .with_elev(10)
+            .warp10_serialize(),
+            "25123456//10/42"
+        );
+
+        assert_eq!(
+            UnamedGeoTimeSeries::new(
+                (chrono::DateTime::UNIX_EPOCH + TimeDelta::new(25, 123456789).unwrap())
+                    .fixed_offset(),
+                Value::Int(42)
+            )
+            .with_geo(42.66, 32.85, Some(10))
+            .warp10_serialize(),
+            "25123456/42.66:32.85/10/42"
+        );
+    }
+
+    #[cfg(feature = "warp10_version_2_1")]
+    #[test]
+    fn serialize_multi_value() {
+        assert_eq!(
+            Value::MultiValue(MultiValue::new(vec![
+                MultiValueKind::Value(Value::Int(42)),
+                MultiValueKind::UnamedGTS(
+                    UnamedGeoTimeSeries::new(
+                        (chrono::DateTime::UNIX_EPOCH + TimeDelta::new(25, 123456789).unwrap())
+                            .fixed_offset(),
+                        Value::Int(42)
+                    )
+                    .with_geo(42.66, 32.85, Some(10))
+                )
+            ]))
+            .warp10_serialize(),
+            "[!42 25123456/42.66:32.85/10/42]"
+        );
+
+        assert_eq!(
+            Value::MultiValue(
+                MultiValue::new(vec![
+                    MultiValueKind::Value(Value::Int(42)),
+                    MultiValueKind::Value(Value::Double(8.1))
+                ])
+                .no_compression()
+            )
+            .warp10_serialize(),
+            "[42 8.1]"
         );
     }
 
