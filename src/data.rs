@@ -1,6 +1,6 @@
 use core::fmt::Write as _;
 
-use chrono::{DateTime, FixedOffset};
+use chrono::{DateTime, FixedOffset, TimeDelta};
 #[cfg(feature = "json")]
 use serde::Serialize;
 
@@ -298,6 +298,58 @@ impl Value {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum TimestampKind {
+    Absolute(DateTime<FixedOffset>),
+    Delta(TimeDelta),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Timestamp(pub TimestampKind);
+
+impl Timestamp {
+    #[must_use]
+    #[inline]
+    pub const fn new(timestamp: TimestampKind) -> Self {
+        Self(timestamp)
+    }
+
+    #[must_use]
+    #[inline]
+    pub const fn absolute(datetime: DateTime<FixedOffset>) -> Self {
+        Self(TimestampKind::Absolute(datetime))
+    }
+
+    #[must_use]
+    #[inline]
+    pub const fn delta(delta: TimeDelta) -> Self {
+        Self(TimestampKind::Delta(delta))
+    }
+
+    #[must_use]
+    #[inline]
+    pub const fn as_kind(&self) -> &TimestampKind {
+        &self.0
+    }
+}
+
+impl Warp10Serializable for Timestamp {
+    #[inline]
+    fn warp10_serialize(&self) -> String {
+        match *self.as_kind() {
+            TimestampKind::Absolute(datetime) => datetime.timestamp_micros().to_string(),
+            TimestampKind::Delta(delta) => {
+                let delta_abs = delta.abs();
+                format!(
+                    "T{}{}",
+                    if delta == delta_abs { "+" } else { "-" },
+                    delta_abs.num_microseconds().unwrap_or_default()
+                )
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct GeoValue {
     pub lat: Double,
     pub lon: Double,
@@ -348,12 +400,32 @@ impl Warp10Serializable for Label {
     }
 }
 
+pub type Attribute = Label;
+
+impl Warp10Serializable for Vec<Label> {
+    #[inline]
+    fn warp10_serialize(&self) -> String {
+        let vec_str =
+            self.iter()
+                .map(|item| item.warp10_serialize())
+                .fold(String::new(), |acc, cur| {
+                    if acc.is_empty() {
+                        cur
+                    } else {
+                        (acc + ",") + &cur
+                    }
+                });
+        format!("{{{vec_str}}}")
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Data {
-    pub date: Option<DateTime<FixedOffset>>,
+    pub timestamp: Option<Timestamp>,
     pub geo: Option<GeoValue>,
-    pub name: String,
-    pub labels: Vec<Label>,
+    pub name: Option<String>,
+    pub labels: Option<Vec<Label>>,
+    pub attributes: Option<Vec<Attribute>>,
     pub value: Value,
 }
 
@@ -361,34 +433,68 @@ impl Data {
     #[must_use]
     #[inline]
     pub const fn new(
-        date: DateTime<FixedOffset>,
+        timestamp: Timestamp,
         geo: Option<GeoValue>,
         name: String,
         labels: Vec<Label>,
+        attributes: Option<Vec<Attribute>>,
         value: Value,
     ) -> Self {
         Self {
-            date: Some(date),
+            timestamp: Some(timestamp),
             geo,
-            name,
-            labels,
+            name: Some(name),
+            labels: Some(labels),
+            attributes,
             value,
         }
     }
 
     #[must_use]
     #[inline]
-    pub const fn new_without_time(
+    pub const fn now(
         geo: Option<GeoValue>,
         name: String,
         labels: Vec<Label>,
+        attributes: Option<Vec<Attribute>>,
         value: Value,
     ) -> Self {
         Self {
-            date: None,
+            timestamp: None,
             geo,
-            name,
-            labels,
+            name: Some(name),
+            labels: Some(labels),
+            attributes,
+            value,
+        }
+    }
+
+    #[must_use]
+    #[inline]
+    pub const fn continuous(
+        timestamp: Option<Timestamp>,
+        geo: Option<GeoValue>,
+        value: Value,
+    ) -> Self {
+        Self {
+            timestamp,
+            geo,
+            name: None,
+            labels: None,
+            attributes: None,
+            value,
+        }
+    }
+
+    #[must_use]
+    #[inline]
+    pub const fn continuous_now(geo: Option<GeoValue>, value: Value) -> Self {
+        Self {
+            timestamp: None,
+            geo,
+            name: None,
+            labels: None,
+            attributes: None,
             value,
         }
     }
@@ -399,40 +505,31 @@ impl Warp10Serializable for Data {
         let geo = self
             .geo
             .as_ref()
+            .map_or_else(|| "/".to_owned(), Warp10Serializable::warp10_serialize);
+        let timestamp = self
+            .timestamp
+            .as_ref()
             .map(Warp10Serializable::warp10_serialize)
-            .unwrap_or_else(|| "/".to_owned());
-        let labels =
-            self.labels
-                .iter()
-                .map(|label| label.warp10_serialize())
-                .fold(String::new(), |acc, cur| {
-                    if acc.is_empty() {
-                        cur
-                    } else {
-                        (acc + ",") + &cur
-                    }
-                });
+            .unwrap_or_default();
 
-        match self.date {
-            Some(date) => {
-                let date_ms = date.timestamp_micros();
+        // Without labels, there is no name and no attributes
+        match &self.labels {
+            None => format!("={}/{} {}", timestamp, geo, self.value.warp10_serialize()),
+            Some(labels) => {
+                let labels_str = labels.warp10_serialize().to_string();
+                let inner = match &self.attributes {
+                    None => labels_str,
+                    Some(attributes) => {
+                        let attributes_str = attributes.warp10_serialize();
+                        labels_str + &attributes_str
+                    }
+                };
                 format!(
-                    "{}/{} {}{{{}}} {}",
-                    date_ms,
+                    "{}/{} {}{} {}",
+                    timestamp,
                     geo,
-                    url_encode(&self.name),
-                    labels,
-                    self.value.warp10_serialize()
-                )
-            }
-            None => {
-                // In this case the warp10 instance will put the same timestamp for the data point has
-                // the ingestion one.
-                format!(
-                    "/{} {}{{{}}} {}",
-                    geo,
-                    url_encode(&self.name),
-                    labels,
+                    url_encode(self.name.as_deref().unwrap_or("")),
+                    inner,
                     self.value.warp10_serialize()
                 )
             }
@@ -623,46 +720,90 @@ mod tests {
     fn serialize_data() {
         assert_eq!(
             Data::new(
-                (chrono::DateTime::UNIX_EPOCH + TimeDelta::new(25, 123456789).unwrap())
-                    .fixed_offset(),
+                Timestamp::absolute(
+                    (chrono::DateTime::UNIX_EPOCH + TimeDelta::new(25, 123456789).unwrap())
+                        .fixed_offset()
+                ),
                 None,
                 "original name".to_owned(),
                 vec![
                     Label::new("label1", "value1"),
                     Label::new("label 2", "value 2"),
                 ],
+                Some(vec![
+                    Attribute::new("attribute1", "value1"),
+                    Attribute::new("attribute 2", "value 2"),
+                ]),
                 Value::String("foobar".to_owned())
             )
             .warp10_serialize(),
-            "25123456// original%20name{label1=value1,label%202=value%202} 'foobar'"
+            "25123456// original%20name{label1=value1,label%202=value%202}{attribute1=value1,attribute%202=value%202} 'foobar'"
         );
         assert_eq!(
             Data::new(
-                (chrono::DateTime::UNIX_EPOCH + TimeDelta::new(25, 123456789).unwrap())
-                    .fixed_offset(),
+                Timestamp::absolute(
+                    (chrono::DateTime::UNIX_EPOCH + TimeDelta::new(25, 123456789).unwrap())
+                        .fixed_offset()
+                ),
                 Some(GeoValue::new(42.66, 32.85, Some(10))),
                 "original name".to_owned(),
                 vec![
                     Label::new("label1", "value1"),
                     Label::new("label 2", "value 2"),
                 ],
+                None,
                 Value::String("foobar".to_owned())
             )
             .warp10_serialize(),
             "25123456/42.66:32.85/10 original%20name{label1=value1,label%202=value%202} 'foobar'"
         );
         assert_eq!(
-            Data::new_without_time(
+            Data::now(
                 Some(GeoValue::new(42.66, 32.85, Some(10))),
                 "original name".to_owned(),
                 vec![
                     Label::new("label1", "value1"),
                     Label::new("label 2", "value 2"),
                 ],
+                None,
                 Value::String("foobar".to_owned())
             )
             .warp10_serialize(),
             "/42.66:32.85/10 original%20name{label1=value1,label%202=value%202} 'foobar'"
+        );
+        assert_eq!(
+            Data::new(
+                Timestamp::delta(TimeDelta::new(20, 0).unwrap()),
+                Some(GeoValue::new(42.66, 32.85, Some(10))),
+                "original name".to_owned(),
+                vec![
+                    Label::new("label1", "value1"),
+                    Label::new("label 2", "value 2"),
+                ],
+                None,
+                Value::String("foobar".to_owned())
+            )
+            .warp10_serialize(),
+            "T+20000000/42.66:32.85/10 original%20name{label1=value1,label%202=value%202} 'foobar'"
+        );
+        assert_eq!(
+            Data::new(
+                Timestamp::delta(TimeDelta::new(-120, 0).unwrap()),
+                Some(GeoValue::new(42.66, 32.85, Some(10))),
+                "original name".to_owned(),
+                vec![
+                    Label::new("label1", "value1"),
+                    Label::new("label 2", "value 2"),
+                ],
+                None,
+                Value::String("foobar".to_owned())
+            )
+            .warp10_serialize(),
+            "T-120000000/42.66:32.85/10 original%20name{label1=value1,label%202=value%202} 'foobar'"
+        );
+        assert_eq!(
+            Data::continuous_now(None, Value::Double(41.21)).warp10_serialize(),
+            "=// 41.21"
         );
     }
 
@@ -684,13 +825,14 @@ mod tests {
         );
 
         assert_eq!(
-            Data::new_without_time(
+            Data::now(
                 Some(GeoValue::new(42.66, 32.85, Some(10))),
                 "original name".to_string(),
                 vec![
                     Label::new("label1", "value1"),
                     Label::new("label 2", "value 2"),
                 ],
+                None,
                 Value::try_from(&map)?,
             )
                 .warp10_serialize(),
