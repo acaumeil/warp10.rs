@@ -1,14 +1,10 @@
-mod client;
-mod data;
-mod error;
-mod http_handler;
-mod response;
-mod token;
-mod writer;
+#[cfg(feature = "async")]
+pub mod client;
+pub mod error;
+pub mod gts;
+pub mod utils;
 
+#[cfg(feature = "async")]
 pub use crate::client::*;
-pub use crate::data::*;
 pub use crate::error::*;
-pub use crate::response::*;
-pub use crate::token::*;
-pub use crate::writer::*;
+pub use crate::gts::*;

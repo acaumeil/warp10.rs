@@ -1,47 +1,69 @@
+use std::fmt::Debug;
+use std::io::{Error, ErrorKind};
+
+use crate::error::{ClientInitializationError, ClientRequestError};
+use crate::gts::{Gts, Warp10Serializable};
+use crate::utils::{API_ENDPOINT_UPDATE, set_ingress_headers};
+
 use reqwest::Url;
 
-use crate::error::*;
-use crate::token::*;
-use crate::writer::*;
-
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Client {
-    pool: reqwest::Client,
-    pool_sync: reqwest::blocking::Client,
-    update_uri: Url,
+    pub client: reqwest::Client,
+    pub base_url: Url,
+    pub read_token: Option<String>,
+    pub write_token: Option<String>,
 }
 
 impl Client {
-    pub fn new(uri: &str) -> Result<Client> {
+    pub fn new(base_url: &str) -> Result<Client, ClientInitializationError> {
         Ok(Client {
-            pool: reqwest::Client::new(),
-            pool_sync: reqwest::blocking::Client::new(),
-            update_uri: format!("{}/api/v0/update", uri).parse()?,
+            client: reqwest::ClientBuilder::new().build()?,
+            base_url: { Url::parse(base_url)? },
+            read_token: None,
+            write_token: None,
         })
     }
 
-    pub fn update_uri(&self) -> &Url {
-        &self.update_uri
+    pub fn set_read_token(&mut self, token: String) {
+        self.read_token = Some(token);
     }
 
-    pub fn pool(&self) -> &reqwest::Client {
-        &self.pool
+    pub fn set_write_token(&mut self, token: String) {
+        self.write_token = Some(token);
     }
 
-    pub fn pool_sync(&self) -> &reqwest::blocking::Client {
-        &self.pool_sync
+    pub fn ingress_url(&self) -> Result<Url, url::ParseError> {
+        self.base_url.join(API_ENDPOINT_UPDATE)
     }
 
-    pub fn host_and_maybe_port(&self) -> String {
-        let host = self.update_uri.host_str().unwrap_or("localhost");
-
-        self.update_uri
-            .port()
-            .map(|port| format!("{}:{}", host, port))
-            .unwrap_or_else(|| host.to_string())
+    pub async fn ingress_gts(
+        &self,
+        series: Vec<Gts>,
+        body_compression: bool,
+    ) -> Result<(), ClientRequestError> {
+        self.ingress_gts_as_str(series.warp10_serialize(), body_compression)
+            .await
     }
 
-    pub fn get_writer(&self, token: String) -> Writer<'_> {
-        Writer::new(self, Token::new(self, token))
+    pub async fn ingress_gts_as_str(
+        &self,
+        series: String,
+        body_compression: bool,
+    ) -> Result<(), ClientRequestError> {
+        let mut request = self.client.post(self.ingress_url()?);
+        request = set_ingress_headers(
+            request,
+            self.write_token
+                .clone()
+                .ok_or(ClientRequestError::TokenUnset(Error::new(
+                    ErrorKind::InvalidInput,
+                    "Write Token is unset",
+                )))?
+                .as_ref(),
+            body_compression,
+        );
+        request.body(series).send().await?;
+        Ok(())
     }
 }

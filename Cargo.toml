@@ -1,7 +1,7 @@
 [package]
 name          = "warp10"
-version       = "2.0.0"
-edition       = "2018"
+version       = "3.0.0"
+edition       = "2024"
 authors       = ["Marc-Antoine Perennou <marc-antoine.perennou@clever-cloud.com>"]
 description   = "Warp10 client for rust"
 repository    = "https://github.com/CleverCloud/warp10.rs"
@@ -13,16 +13,18 @@ license       = "BSD-3-Clause"
 
 [dependencies]
 percent-encoding = "^2.0"
-reqwest          = { version = "0.13.2", features = ["blocking"] }
+reqwest          = { version = "0.13.2", optional = true }
 chrono           = "0.4.43"
 url              = "^2.0"
 serde            = { version = "^1.0", optional = true }
 serde_json       = { version = "^1.0", optional = true }
+tokio            = { version = "1.52.0", optional = true }
 
 [features]
-default = ["json"]
-json = ["serde", "serde_json"]
+default = [ "async", "warp10_version_2_1" ]
+json = [ "dep:serde", "dep:serde_json" ]
 warp10_version_2_1 = []
+async = [ "dep:reqwest", "dep:tokio", "tokio/macros" ]
 
 [badges]
 travis-ci = { repository = "Keruspe/warp10.rs" }

@@ -1,11 +1,9 @@
-use core::fmt::Write as _;
+use std::collections::VecDeque;
+use std::fmt::Write;
 
 use chrono::{DateTime, FixedOffset, TimeDelta};
 #[cfg(feature = "json")]
 use serde::Serialize;
-
-#[cfg(feature = "json")]
-use crate::error;
 
 fn url_encode(input: &str) -> String {
     let mut code = String::new();
@@ -60,72 +58,77 @@ impl Quaternions {
 #[cfg(feature = "warp10_version_2_1")]
 #[derive(Debug, Clone, PartialEq)]
 pub enum MultiValueKind {
-    UnamedGTS(UnamedGeoTimeSeries),
+    UnamedGts(UnamedGts),
     Value(Value),
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct UnamedGeoTimeSeries {
+pub struct UnamedGts {
     pub timestamp: DateTime<FixedOffset>,
-    pub lat: Option<Double>,
-    pub lon: Option<Double>,
-    pub elev: Option<Long>,
+    pub latitude: Option<Double>,
+    pub longitude: Option<Double>,
+    pub elevation: Option<Long>,
     pub value: Value,
 }
 
-impl UnamedGeoTimeSeries {
+impl UnamedGts {
     #[must_use]
     #[inline]
     pub const fn new(timestamp: DateTime<FixedOffset>, value: Value) -> Self {
-        Self::for_ts(timestamp, value)
+        Self::for_timestamp(timestamp, value)
     }
 
     #[must_use]
     #[inline]
-    pub const fn for_ts(timestamp: DateTime<FixedOffset>, value: Value) -> Self {
+    pub const fn for_timestamp(timestamp: DateTime<FixedOffset>, value: Value) -> Self {
         Self {
             timestamp,
-            lat: None,
-            lon: None,
-            elev: None,
+            latitude: None,
+            longitude: None,
+            elevation: None,
             value,
         }
     }
 
     #[must_use]
     #[inline]
-    pub const fn with_geo(mut self, lat: Double, lon: Double, elev: Option<Long>) -> Self {
-        self.lat = Some(lat);
-        self.lon = Some(lon);
-        self.elev = elev;
+    pub const fn with_geo(
+        mut self,
+        latitude: Double,
+        longitude: Double,
+        elevation: Option<Long>,
+    ) -> Self {
+        self.latitude = Some(latitude);
+        self.longitude = Some(longitude);
+        self.elevation = elevation;
         self
     }
 
     #[must_use]
     #[inline]
-    pub const fn with_elev(mut self, elev: Long) -> Self {
-        self.elev = Some(elev);
+    pub const fn with_elevation(mut self, elevation: Long) -> Self {
+        self.elevation = Some(elevation);
         self
     }
 
     #[must_use]
     #[inline]
     pub fn validate(self) -> bool {
-        self.lat.is_some() == self.lon.is_some()
+        self.latitude.is_some() == self.longitude.is_some()
     }
 }
 
-impl Warp10Serializable for UnamedGeoTimeSeries {
+impl Warp10Serializable for UnamedGts {
     fn warp10_serialize(&self) -> String {
-        let mut coord = String::new();
-        if let (Some(lat), Some(lon)) = (self.lat, self.lon) {
-            let _ = write!(coord, "{lat}:{lon}");
+        let mut coordinate = String::new();
+        if let (Some(latitude), Some(longitude)) = (self.latitude, self.longitude) {
+            let _ = write!(coordinate, "{latitude}:{longitude}");
         }
-        if let Some(elev) = self.elev {
-            coord.push('/');
-            coord.push_str(&elev.to_string());
+        if let Some(elev) = self.elevation {
+            coordinate.push('/');
+            coordinate.push_str(&elev.to_string());
         }
-        if coord.is_empty() {
+        if coordinate.is_empty() {
             format!(
                 "{}/{}",
                 self.timestamp.timestamp_micros(),
@@ -135,7 +138,7 @@ impl Warp10Serializable for UnamedGeoTimeSeries {
             format!(
                 "{}/{}/{}",
                 self.timestamp.timestamp_micros(),
-                coord,
+                coordinate,
                 self.value.warp10_serialize()
             )
         }
@@ -176,7 +179,7 @@ impl Warp10Serializable for MultiValue {
             .iter()
             .map(|data| match *data {
                 MultiValueKind::Value(ref value) => value.warp10_serialize(),
-                MultiValueKind::UnamedGTS(ref gts) => gts.warp10_serialize(),
+                MultiValueKind::UnamedGts(ref gts) => gts.warp10_serialize(),
             })
             .collect::<Vec<_>>()
             .join(" ");
@@ -289,10 +292,10 @@ impl From<MultiValue> for Value {
     }
 }
 
+#[cfg(feature = "json")]
 impl Value {
-    #[cfg(feature = "json")]
     #[inline]
-    pub fn try_from<T: Serialize>(obj: &T) -> error::Result<Self> {
+    pub fn try_from<T: Serialize>(obj: &T) -> Result<Self, serde_json::Error> {
         Ok(Self::String(serde_json::to_string(obj)?))
     }
 }
@@ -351,16 +354,20 @@ impl Warp10Serializable for Timestamp {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct GeoValue {
-    pub lat: Double,
-    pub lon: Double,
-    pub elev: Option<Long>,
+    pub latitude: Double,
+    pub longitude: Double,
+    pub elevation: Option<Long>,
 }
 
 impl GeoValue {
     #[must_use]
     #[inline]
-    pub const fn new(lat: Double, lon: Double, elev: Option<Long>) -> Self {
-        Self { lat, lon, elev }
+    pub const fn new(latitude: Double, longitude: Double, elevation: Option<Long>) -> Self {
+        Self {
+            latitude,
+            longitude,
+            elevation,
+        }
     }
 }
 
@@ -369,9 +376,12 @@ impl Warp10Serializable for GeoValue {
     fn warp10_serialize(&self) -> String {
         format!(
             "{}:{}/{}",
-            self.lat,
-            self.lon,
-            self.elev.map(|e| e.to_string()).unwrap_or_default()
+            self.latitude,
+            self.longitude,
+            self.elevation
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_default()
         )
     }
 }
@@ -402,25 +412,40 @@ impl Warp10Serializable for Label {
 
 pub type Attribute = Label;
 
-impl Warp10Serializable for Vec<Label> {
-    #[inline]
+impl Warp10Serializable for [Label] {
     fn warp10_serialize(&self) -> String {
-        let vec_str =
-            self.iter()
-                .map(|item| item.warp10_serialize())
-                .fold(String::new(), |acc, cur| {
-                    if acc.is_empty() {
-                        cur
-                    } else {
-                        (acc + ",") + &cur
-                    }
-                });
-        format!("{{{vec_str}}}")
+        let labels = self
+            .iter()
+            .map(Label::warp10_serialize)
+            .fold(String::new(), |acc, cur| {
+                if acc.is_empty() {
+                    cur
+                } else {
+                    (acc + ",") + &cur
+                }
+            });
+        format!("{{{labels}}}")
+    }
+}
+
+impl Warp10Serializable for VecDeque<Label> {
+    fn warp10_serialize(&self) -> String {
+        let labels = self
+            .iter()
+            .map(Label::warp10_serialize)
+            .fold(String::new(), |acc, cur| {
+                if acc.is_empty() {
+                    cur
+                } else {
+                    (acc + ",") + &cur
+                }
+            });
+        format!("{{{labels}}}")
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Data {
+pub struct Gts {
     pub timestamp: Option<Timestamp>,
     pub geo: Option<GeoValue>,
     pub name: Option<String>,
@@ -429,7 +454,7 @@ pub struct Data {
     pub value: Value,
 }
 
-impl Data {
+impl Gts {
     #[must_use]
     #[inline]
     pub const fn new(
@@ -471,7 +496,7 @@ impl Data {
 
     #[must_use]
     #[inline]
-    pub const fn continuous(
+    pub const fn continuation(
         timestamp: Option<Timestamp>,
         geo: Option<GeoValue>,
         value: Value,
@@ -488,7 +513,7 @@ impl Data {
 
     #[must_use]
     #[inline]
-    pub const fn continuous_now(geo: Option<GeoValue>, value: Value) -> Self {
+    pub const fn continuation_now(geo: Option<GeoValue>, value: Value) -> Self {
         Self {
             timestamp: None,
             geo,
@@ -500,7 +525,7 @@ impl Data {
     }
 }
 
-impl Warp10Serializable for Data {
+impl Warp10Serializable for Gts {
     fn warp10_serialize(&self) -> String {
         let geo = self
             .geo
@@ -528,7 +553,7 @@ impl Warp10Serializable for Data {
                     "{}/{} {}{} {}",
                     timestamp,
                     geo,
-                    url_encode(self.name.as_deref().unwrap_or("")),
+                    url_encode(self.name.as_deref().unwrap_or_default()),
                     inner,
                     self.value.warp10_serialize()
                 )
@@ -537,10 +562,37 @@ impl Warp10Serializable for Data {
     }
 }
 
+impl Warp10Serializable for [Gts] {
+    fn warp10_serialize(&self) -> String {
+        self.iter()
+            .map(Gts::warp10_serialize)
+            .fold(String::new(), |acc, cur| {
+                if acc.is_empty() {
+                    cur
+                } else {
+                    (acc + "\n") + &cur
+                }
+            })
+    }
+}
+
+impl Warp10Serializable for VecDeque<Gts> {
+    fn warp10_serialize(&self) -> String {
+        self.iter()
+            .map(Gts::warp10_serialize)
+            .fold(String::new(), |acc, cur| {
+                if acc.is_empty() {
+                    cur
+                } else {
+                    (acc + "\n") + &cur
+                }
+            })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
     use chrono::TimeDelta;
 
     #[test]
@@ -621,7 +673,7 @@ mod tests {
     #[test]
     fn serialize_unamed_geo_time_series() {
         assert_eq!(
-            UnamedGeoTimeSeries::new(
+            UnamedGts::new(
                 (chrono::DateTime::UNIX_EPOCH + TimeDelta::new(25, 123456789).unwrap())
                     .fixed_offset(),
                 Value::Int(42)
@@ -631,7 +683,7 @@ mod tests {
         );
 
         assert_eq!(
-            UnamedGeoTimeSeries::new(
+            UnamedGts::new(
                 (chrono::DateTime::UNIX_EPOCH + TimeDelta::new(25, 123456789).unwrap())
                     .fixed_offset(),
                 Value::Int(42)
@@ -642,18 +694,18 @@ mod tests {
         );
 
         assert_eq!(
-            UnamedGeoTimeSeries::new(
+            UnamedGts::new(
                 (chrono::DateTime::UNIX_EPOCH + TimeDelta::new(25, 123456789).unwrap())
                     .fixed_offset(),
                 Value::Int(42)
             )
-            .with_elev(10)
+            .with_elevation(10)
             .warp10_serialize(),
             "25123456//10/42"
         );
 
         assert_eq!(
-            UnamedGeoTimeSeries::new(
+            UnamedGts::new(
                 (chrono::DateTime::UNIX_EPOCH + TimeDelta::new(25, 123456789).unwrap())
                     .fixed_offset(),
                 Value::Int(42)
@@ -670,8 +722,8 @@ mod tests {
         assert_eq!(
             Value::MultiValue(MultiValue::new(vec![
                 MultiValueKind::Value(Value::Int(42)),
-                MultiValueKind::UnamedGTS(
-                    UnamedGeoTimeSeries::new(
+                MultiValueKind::UnamedGts(
+                    UnamedGts::new(
                         (chrono::DateTime::UNIX_EPOCH + TimeDelta::new(25, 123456789).unwrap())
                             .fixed_offset(),
                         Value::Int(42)
@@ -719,7 +771,7 @@ mod tests {
     #[test]
     fn serialize_data() {
         assert_eq!(
-            Data::new(
+            Gts::new(
                 Timestamp::absolute(
                     (chrono::DateTime::UNIX_EPOCH + TimeDelta::new(25, 123456789).unwrap())
                         .fixed_offset()
@@ -740,7 +792,7 @@ mod tests {
             "25123456// original%20name{label1=value1,label%202=value%202}{attribute1=value1,attribute%202=value%202} 'foobar'"
         );
         assert_eq!(
-            Data::new(
+            Gts::new(
                 Timestamp::absolute(
                     (chrono::DateTime::UNIX_EPOCH + TimeDelta::new(25, 123456789).unwrap())
                         .fixed_offset()
@@ -758,7 +810,7 @@ mod tests {
             "25123456/42.66:32.85/10 original%20name{label1=value1,label%202=value%202} 'foobar'"
         );
         assert_eq!(
-            Data::now(
+            Gts::now(
                 Some(GeoValue::new(42.66, 32.85, Some(10))),
                 "original name".to_owned(),
                 vec![
@@ -772,7 +824,7 @@ mod tests {
             "/42.66:32.85/10 original%20name{label1=value1,label%202=value%202} 'foobar'"
         );
         assert_eq!(
-            Data::new(
+            Gts::new(
                 Timestamp::delta(TimeDelta::new(20, 0).unwrap()),
                 Some(GeoValue::new(42.66, 32.85, Some(10))),
                 "original name".to_owned(),
@@ -787,7 +839,7 @@ mod tests {
             "T+20000000/42.66:32.85/10 original%20name{label1=value1,label%202=value%202} 'foobar'"
         );
         assert_eq!(
-            Data::new(
+            Gts::new(
                 Timestamp::delta(TimeDelta::new(-120, 0).unwrap()),
                 Some(GeoValue::new(42.66, 32.85, Some(10))),
                 "original name".to_owned(),
@@ -802,14 +854,14 @@ mod tests {
             "T-120000000/42.66:32.85/10 original%20name{label1=value1,label%202=value%202} 'foobar'"
         );
         assert_eq!(
-            Data::continuous_now(None, Value::Double(41.21)).warp10_serialize(),
+            Gts::continuation_now(None, Value::Double(41.21)).warp10_serialize(),
             "=// 41.21"
         );
     }
 
     #[test]
     #[cfg(feature = "json")]
-    fn serialize_structure_into_json_string() -> Result<(), crate::error::Error> {
+    fn serialize_structure_into_json_string() -> Result<(), serde_json::Error> {
         assert_eq!(
             Value::try_from(&vec![""])?,
             Value::String("[\"\"]".to_string())
@@ -825,7 +877,7 @@ mod tests {
         );
 
         assert_eq!(
-            Data::now(
+            Gts::now(
                 Some(GeoValue::new(42.66, 32.85, Some(10))),
                 "original name".to_string(),
                 vec![
@@ -835,7 +887,7 @@ mod tests {
                 None,
                 Value::try_from(&map)?,
             )
-                .warp10_serialize(),
+            .warp10_serialize(),
             "/42.66:32.85/10 original%20name{label1=value1,label%202=value%202} '{\"baz\":\"qux'\"}'"
         );
 
